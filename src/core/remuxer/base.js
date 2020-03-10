@@ -43,10 +43,6 @@ export class BaseRemuxer {
         this.tsAlign = 1;
     }
 
-    shifted(timestamp) {
-        return timestamp - this.timeOffset;
-    }
-
     scaled(timestamp) {
         return timestamp / this.scaleFactor;
     }
@@ -56,11 +52,11 @@ export class BaseRemuxer {
     }
 
     remux(unit) {
-        if (unit && this.timeOffset >= 0) {
+        if (unit) {
             this.samples.push({
                 unit: unit,
-                pts: this.shifted(unit.pts),
-                dts: this.shifted(unit.dts)
+                pts: unit.pts,
+                dts: unit.dts
             });
             return true;
         }
@@ -80,8 +76,8 @@ export class BaseRemuxer {
     }
 
     init(initPTS, initDTS, shouldInitialize=true) {
-        this.initPTS = Math.min(initPTS, this.samples[0].dts - this.unscaled(this.timeOffset));
-        this.initDTS = Math.min(initDTS, this.samples[0].dts - this.unscaled(this.timeOffset));
+        this.initPTS = Math.min(initPTS, this.samples[0].dts /*- this.unscaled(this.timeOffset)*/);
+        this.initDTS = Math.min(initDTS, this.samples[0].dts /*- this.unscaled(this.timeOffset)*/);
         Log.debug(`Initial pts=${this.initPTS} dts=${this.initDTS} offset=${this.unscaled(this.timeOffset)}`);
         this.initialized = shouldInitialize;
     }
@@ -94,6 +90,16 @@ export class BaseRemuxer {
 
     static dtsSortFunc(a,b) {
         return (a.dts-b.dts);
+    }
+
+    static groupByDts(gop) {
+        const groupBy = (xs, key) => {
+            return xs.reduce((rv, x) => {
+                (rv[x[key]] = rv[x[key]] || []).push(x);
+                return rv;
+            }, {});
+        };
+        return groupBy(gop, 'dts');
     }
 
     getPayloadBase(sampleFunction, setupSample) {

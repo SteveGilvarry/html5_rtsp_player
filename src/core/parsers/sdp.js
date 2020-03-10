@@ -16,7 +16,7 @@ export class SDPParser {
     }
 
     parse(content) {
-        Log.debug(content);
+        // Log.debug(content);
         return new Promise((resolve, reject) => {
             var dataString = content;
             var success = true;
@@ -118,7 +118,7 @@ export class SDPParser {
     }
 
     _parseOrigin(line) {
-        let matches = line.match(/^o=([^ ]+) ([0-9]+) ([0-9]+) (IN) (IP4|IP6) ([^ ]+)$/);
+        let matches = line.match(/^o=([^ ]+) (-?[0-9]+) (-?[0-9]+) (IN) (IP4|IP6) ([^ ]+)$/);
         if (!matches || !matches.length) {
             Log.log('\'o=\' (Origin) formatted incorrectly: ' + line);
             return false;

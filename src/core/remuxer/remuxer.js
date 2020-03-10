@@ -35,21 +35,26 @@ export class Remuxer {
 
         this.errorListener = this.mseClose.bind(this);
         this.closeListener = this.mseClose.bind(this);
+        this.errorDecodeListener = this.mseErrorDecode.bind(this);
 
-        this.mseEventSource.on('error', this.errorListener);
-        this.mseEventSource.on('sourceclosed', this.closeListener);
-        
         this.eventSource.addEventListener('ready', this.init.bind(this));
     }
 
-    reset() {
+    initMSEHandlers() {
+        this.mseEventSource.on('error', this.errorListener);
+        this.mseEventSource.on('sourceclosed', this.closeListener);
+        this.mseEventSource.on('errordecode', this.errorDecodeListener);
+    }
+
+    async reset() {
         this.tracks = {};
         this.initialized = false;
         this.initSegments = {};
         this.codecs = [];
         this.streams = {};
         this.enabled = false;
-        this.mse.clear();
+        await this.mse.clear();
+        this.initMSEHandlers();
     }
 
     destroy() {
@@ -63,7 +68,7 @@ export class Remuxer {
     }
 
     onTracks(tracks) {
-        Log.debug(tracks.detail);
+        Log.debug(`ontracks: `, tracks.detail);
         // store available track types
         for (let track of tracks.detail) {
             this.tracks[track.type] = new Remuxer.TrackConverters[track.type](Remuxer.TrackTimescale[track.type], Remuxer.TrackScaleFactor[track.type], track.params);
@@ -113,8 +118,8 @@ export class Remuxer {
             initmse.push(this.initMSE(track_type, track.mp4track.codec));
         }
         this.initialized = true;
-        Promise.all(initmse).then(()=>{
-            this.mse.play();
+        return Promise.all(initmse).then(()=>{
+            //this.mse.play();
             this.enabled = true;
         });
         
@@ -134,15 +139,27 @@ export class Remuxer {
 
     mseClose() {
         // this.mse.clear();
+        this.client.stop();
         this.eventSource.dispatchEvent('stopped');
+    }
+
+    mseErrorDecode() {
+        if(this.tracks[2]) {
+            console.warn(this.tracks[2].mp4track.type);
+            this.mse.buffers[2].destroy();
+            delete this.tracks[2];
+        }
     }
 
     flush() {
         this.onSamples();
+
         if (!this.initialized) {
+            // Log.debug(`Initialize...`);
             if (Object.keys(this.tracks).length) {
                 for (let track_type in this.tracks) {
                     if (!this.tracks[track_type].readyToDecode || !this.tracks[track_type].samples.length) return;
+                    Log.debug(`Init MSE for track ${this.tracks[track_type].mp4track.type}`);
                 }
                 this.eventSource.dispatchEvent('ready');
             }
@@ -167,8 +184,16 @@ export class Remuxer {
             let queue = this.client.sampleQueues[qidx];
             while (queue.length) {
                 let units = queue.shift();
-                for (let chunk of units) {
-                    this.tracks[qidx].remux(chunk);
+                if(units){
+                    for (let chunk of units) {
+                        if(this.tracks[qidx]) {
+                            this.tracks[qidx].remux(chunk);
+                        }
+                    }
+                } else {
+                    if (!this.initialized) {
+                        delete this.tracks[qidx];
+                    }
                 }
             }
         }
@@ -192,7 +217,8 @@ export class Remuxer {
         this.clientEventSource.on('clear', ()=>{
             this.reset();
             this.mse.clear().then(()=>{
-                this.mse.play();
+                //this.mse.play();
+                this.initMSEHandlers();
             });
         });
     }

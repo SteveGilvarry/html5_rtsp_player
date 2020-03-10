@@ -42,10 +42,20 @@ export class H264Remuxer extends BaseRemuxer {
         this.h264 = new H264Parser(this);
 
         if (params.sps) {
-            this.setSPS(new Uint8Array(params.sps));
+            let arr = new Uint8Array(params.sps);
+            if ((arr[0] & 0x1f) === 7) {
+                this.setSPS(arr);
+            } else {
+                Log.warn("bad SPS in SDP")
+            }
         }
         if (params.pps) {
-            this.setPPS(new Uint8Array(params.pps));
+            let arr = new Uint8Array(params.pps);
+            if ((arr[0] & 0x1f) === 8) {
+                this.setPPS(arr);
+            } else {
+                Log.warn("bad PPS in SDP")
+            }
         }
 
         if (this.mp4track.pps && this.mp4track.sps) {
@@ -70,24 +80,37 @@ export class H264Remuxer extends BaseRemuxer {
     }
 
     remux(nalu) {
-        // console.log(nalu.toString());
         if (this.lastGopDTS < nalu.dts) {
             this.gop.sort(BaseRemuxer.dtsSortFunc);
+
+            if (this.gop.length > 1) {
+                // Aggregate multi-slices which belong to one frame
+                const groupedGop = BaseRemuxer.groupByDts(this.gop);
+                this.gop = Object.values(groupedGop).map(group => {
+                    return group.reduce((preUnit, curUnit) => {
+                        const naluData = curUnit.getData();
+                        naluData.set(new Uint8Array([0x0, 0x0, 0x0, 0x1]));
+                        preUnit.appendData(naluData);
+                        return preUnit;
+                    });
+                });
+            }
+
             for (let unit of this.gop) {
-                if (this.h264.parseNAL(unit)){
-                    if (this.firstUnit) {
-                        unit.ntype = 5;//NALU.IDR;
-                        this.firstUnit = false;
-                    }
-                    if (super.remux.call(this, unit)) {
-                        this.mp4track.len += unit.getSize();
-                    }
+                // if (this.firstUnit) {
+                //     unit.ntype = 5;//NALU.IDR;
+                //     this.firstUnit = false;
+                // }
+                if (super.remux.call(this, unit)) {
+                    this.mp4track.len += unit.getSize();
                 }
             }
             this.gop = [];
             this.lastGopDTS = nalu.dts
         }
-        this.gop.push(nalu);
+        if (this.h264.parseNAL(nalu)) {
+            this.gop.push(nalu);
+        }
     }
 
     getPayload() {
@@ -116,8 +139,8 @@ export class H264Remuxer extends BaseRemuxer {
 
             let unit = sample.unit;
             
-            pts = /*Math.round(*/(sample.pts - this.initDTS)/*/this.tsAlign)*this.tsAlign*/;
-            dts = /*Math.round(*/(sample.dts - this.initDTS)/*/this.tsAlign)*this.tsAlign*/;
+            pts = sample.pts- this.initDTS; // /*Math.round(*/(sample.pts - this.initDTS)/*/this.tsAlign)*this.tsAlign*/;
+            dts = sample.dts - this.initDTS; ///*Math.round(*/(sample.dts - this.initDTS)/*/this.tsAlign)*this.tsAlign*/;
             // ensure DTS is not bigger than PTS
             dts = Math.min(pts,dts);
             // if not first AVC sample of video track, normalize PTS/DTS with previous sample value
@@ -125,7 +148,7 @@ export class H264Remuxer extends BaseRemuxer {
             if (lastDTS !== undefined) {
                 let sampleDuration = this.scaled(dts - lastDTS);
                 // Log.debug(`Sample duration: ${sampleDuration}`);
-                if (sampleDuration <= 0) {
+                if (sampleDuration < 0) {
                     Log.log(`invalid AVC sample duration at PTS/DTS: ${pts}/${dts}|lastDTS: ${lastDTS}:${sampleDuration}`);
                     this.mp4track.len -= unit.getSize();
                     continue;
@@ -199,7 +222,7 @@ export class H264Remuxer extends BaseRemuxer {
             mp4Sample.duration = this.lastSampleDuration;
         }
 
-        if(samples.length && (!this.nextDts /*|| navigator.userAgent.toLowerCase().indexOf('chrome') > -1*/)) {
+        if(samples.length && (!this.nextDts || navigator.userAgent.toLowerCase().indexOf('chrome') > -1)) {
             let flags = samples[0].flags;
             // chrome workaround, mark first sample as being a Random Access Point to avoid sourcebuffer append issue
             // https://code.google.com/p/chromium/issues/detail?id=229412

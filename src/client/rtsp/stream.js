@@ -2,6 +2,7 @@ import {getTagged} from '../../deps/bp_logger.js';
 
 import {RTSPClientSM as RTSPClient} from './client.js';
 import {Url} from '../../core/util/url.js';
+import {RTSPError} from "./client";
 
 const LOG_TAG = "rtsp:stream";
 const Log = getTagged(LOG_TAG);
@@ -16,6 +17,7 @@ export class RTSPStream {
 
         this.stopKeepAlive();
         this.keepaliveInterval = null;
+        this.keepaliveTime = 30000;
     }
 
     reset() {
@@ -25,8 +27,13 @@ export class RTSPStream {
         this.track = null;
     }
 
-    start() {
-        return this.sendSetup().then(this.sendPlay.bind(this));
+    start(lastSetupPromise = null) {
+        if (lastSetupPromise != null) {
+            // if a setup was already made, use the same session
+            return lastSetupPromise.then((obj) => this.sendSetup(obj.session))
+        } else {
+            return this.sendSetup();
+        }
     }
 
     stop() {
@@ -64,9 +71,13 @@ export class RTSPStream {
     }
 
     sendKeepalive() {
-        return this.client.sendRequest('GET_PARAMETER', this.getSetupURL(this.track), {
-            'Session': this.session
-        });
+        if (this.client.methods.includes('GET_PARAMETER')) {
+            return this.client.sendRequest('GET_PARAMETER', this.getSetupURL(this.track), {
+                'Session': this.session
+            });
+        } else {
+            return this.client.sendRequest('OPTIONS', '*');
+        }
     }
 
     stopKeepAlive() {
@@ -77,9 +88,14 @@ export class RTSPStream {
         this.keepaliveInterval = setInterval(() => {
             this.sendKeepalive().catch((e) => {
                 Log.error(e);
+                if (e instanceof RTSPError) {
+                    if (Number(e.data.parsed.code) == 501) {
+                        return;
+                    }
+                }
                 this.client.reconnect();
             });
-        }, 30000);
+        }, this.keepaliveTime);
     }
 
     sendRequest(_cmd, _params = {}) {
@@ -91,58 +107,42 @@ export class RTSPStream {
         return this.client.sendRequest(_cmd, this.getControlURL(), params);
     }
 
-    sendSetup() {
+    sendSetup(session = null) {
         this.state = RTSPClient.STATE_SETUP;
         this.rtpChannel = this.client.interleaveChannelIndex;
         let interleavedChannels = this.client.interleaveChannelIndex++ + "-" + this.client.interleaveChannelIndex++;
-        return this.client.sendRequest('SETUP', this.getSetupURL(this.track), {
+        let params = {
             'Transport': `RTP/AVP/TCP;unicast;interleaved=${interleavedChannels}`,
             'Date': new Date().toUTCString()
-        }).then((_data) => {
+        };
+        if(session){
+            params.Session = session;
+        }
+        return this.client.sendRequest('SETUP', this.getSetupURL(this.track), params).then((_data) => {
             this.session = _data.headers['session'];
+            let transport = _data.headers['transport'];
+            if (transport) {
+                let interleaved = transport.match(/interleaved=([0-9]+)-([0-9]+)/)[1];
+                if (interleaved) {
+                    this.rtpChannel = Number(interleaved);
+                }
+            }
+            let sessionParamsChunks = this.session.split(';').slice(1);
+            let sessionParams = {};
+            for (let chunk of sessionParamsChunks) {
+                let kv = chunk.split('=');
+                sessionParams[kv[0]] = kv[1];
+            }
+            if (sessionParams['timeout']) {
+                this.keepaliveInterval = Number(sessionParams['timeout']) * 500; // * 1000 / 2
+            }
             /*if (!/RTP\/AVP\/TCP;unicast;interleaved=/.test(_data.headers["transport"])) {
                 // TODO: disconnect stream and notify client
                 throw new Error("Connection broken");
             }*/
+            this.client.useRTPChannel(this.rtpChannel);
             this.startKeepAlive();
+            return {track: this.track, data: _data, session: this.session};
         });
-    }
-
-    async sendPlay(pos = 0) {
-        this.state = RTSPStream.STATE_PLAY;
-        let params = {};
-        let range = this.client.sdp.sessionBlock.range;
-        if (range) {
-            // TODO: seekable
-            if (range[0] == -1) {
-                range[0] = 0;// Do not handle now at the moment
-            }
-            // params['Range'] = `${range[2]}=${range[0]}-`;
-        }
-        this.client.useRTPChannel(this.rtpChannel);
-        let data = await this.sendRequest('PLAY', params);
-        this.state = RTSPClient.STATE_PLAYING;
-        return {track: this.track, data: data};
-    }
-
-    async sendPause() {
-        if (!this.client.supports("PAUSE")) {
-            return;
-        }
-        this.state = RTSPClient.STATE_PAUSE;
-        await this.sendRequest("PAUSE");
-        this.state = RTSPClient.STATE_PAUSED;
-    }
-
-    async sendTeardown() {
-        if (this.state != RTSPClient.STATE_TEARDOWN) {
-            this.client.forgetRTPChannel(this.rtpChannel);
-            this.state = RTSPClient.STATE_TEARDOWN;
-            this.stopKeepAlive();
-            await this.sendRequest("TEARDOWN");
-            Log.log('RTSPClient: STATE_TEARDOWN');
-            ///this.client.connection.disconnect();
-            // TODO: Notify client
-        }
     }
 }

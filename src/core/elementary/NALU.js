@@ -3,10 +3,19 @@ import {appendByteArray} from '../util/binary.js';
 export class NALU {
 
     static get NDR() {return 1;}
+    static get SLICE_PART_A() {return 2;}
+    static get SLICE_PART_B() {return 3;}
+    static get SLICE_PART_C() {return 4;}
     static get IDR() {return 5;}
     static get SEI() {return 6;}
     static get SPS() {return 7;}
     static get PPS() {return 8;}
+    static get DELIMITER() {return 9;}
+    static get EOSEQ() {return 10;}
+    static get EOSTR() {return 11;}
+    static get FILTER() {return 12;}
+    static get STAP_A() {return 24;}
+    static get STAP_B() {return 25;}
     static get FU_A() {return 28;}
     static get FU_B() {return 29;}
 
@@ -33,7 +42,7 @@ export class NALU {
         this.nri = nri;
         this.dts = dts;
         this.pts = pts ? pts : this.dts;
-
+        this.sliceType = null;
     }
 
     appendData(idata) {
@@ -41,11 +50,11 @@ export class NALU {
     }
 
     toString() {
-        return `${NALU.type(this)}: NRI: ${this.getNri()}, PTS: ${this.pts}, DTS: ${this.dts}`;
+        return `${NALU.type(this)}(${this.data.byteLength}): NRI: ${this.getNri()}, PTS: ${this.pts}, DTS: ${this.dts}`;
     }
 
     getNri() {
-        return this.nri >> 6;
+        return this.nri >> 5;
     }
 
     type() {
@@ -53,7 +62,7 @@ export class NALU {
     }
 
     isKeyframe() {
-        return this.ntype == NALU.IDR;
+        return this.ntype === NALU.IDR || this.sliceType === 7;
     }
 
     getSize() {
